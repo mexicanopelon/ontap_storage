@@ -1,0 +1,64 @@
+---
+netapp_hostname: 10.1.6.125
+netapp_username: admin
+netapp_password: "Test123$"
+netapp_vserver: nfs
+netapp_mirror_vserver: nfs-mirror
+netapp_aggr: orl_ONTAP1_01_SSD_1
+
+storage_vm: 
+  # windows: nascifsash3
+  unix: nfs
+  # vmware: vmwareash3
+
+source_cluster: orl-ONTAP1
+  # east: orl-ONTAP1
+  # west: nascluschi1
+  # azure: anf_volume
+  # nuclear: onprem_nuclear_nas
+
+destination_cluster: orl-ONTAP1
+  # east: orl-ONTAP1
+  # west: nascluschi1
+  # azure: anf_volume
+  # nuclear: onprem_nuclear_nas
+
+qos_policy_groups:
+  - Extreme
+  - Performance
+  - Value
+  - Custom
+  
+aggr_local_tiers:
+  - aggr1_ash3_01
+  - aggr1_ash3_02
+  - aggr1_ash3_03
+  - aggr1_ash3_04
+
+snapshot_policies:
+  - 14daily_6pm
+  - 14daily_7pm
+  - 14daily_8pm
+  - 14daily_9pm
+  - 14daily_10pm
+
+snapmirror_protection_polices:
+  - MirrorandVault35_9pm
+  - MirrorandVault35_10pm
+  - MirrorandVault35_11pm
+
+snapmirror_dest:
+  src_cluster1: nascluschi1
+  src_cluster2: nasclusevash3
+  nasclusash3: nast3chi1
+  src_cluster3: nucclusash3
+  src_cluster4: nasclusash3
+
+snapmirror_storage_vm:
+  nascifsash3: nascifsash3dr 
+  nasnfsash3: nasnfsash3dr
+  nast3cifash3: nast3cifash3dr
+  src_storage_vm1: nast3cifschi1  #  These are missing the 'dr' at the end, what the correlation?
+  nast3nfsash3: nast3nfsash3dr
+  src_storage_vm2: nast3nfschi1   #  These are missing the 'dr' at the end, what the correlation?
+  vmwareash3: vmwareash3dr

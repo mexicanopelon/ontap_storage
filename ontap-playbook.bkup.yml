@@ -1,0 +1,188 @@
+---
+- name: Create a volume on NetApp ONTAP
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  collections:
+    - netapp.ontap  
+
+  vars_files:
+    - ontap-linux-vars.yml
+
+  vars:
+    action: new                           # new, grow, reclaim, reduce, add server(s)
+    platform: Unix                        # Windows, Unix
+    vol_name: cdelapaz_test
+    vol_capacity: 44            
+    vol_location: op-east                 # op-east, op-west, az-east, az-west, azgov-east, azgov-west, nuc-east, nuc-west
+    export_policy: [ server1, server2 ]   # ONLY for Linux:  List of servers to mount volume on.  Fixed for Windows.
+    vol_names: []
+    dup_vol_names: []
+
+  tasks:
+  
+  # Creating a new volume
+
+  # 1) What action?  New
+  # 2) What platform? Unix
+  # 3) What cluster_location? op-east 
+  # 4) Vol name? (ServiceNow should sanitize this)
+  #       Check if it exists?  If it doesn't, vol_name + "_e001" for east, vol_name + "_w001)" for west?
+  #                            If it exists, iterate through list of similar and add +1, example vol_name + "_e002"
+  # 5) What size?  vol_size
+  # 6) Export policy?  Only provided for Linux.  Fixed var for Windows.
+  # 7) Always enable SnapMirror.  SnapMirror volume name is vol_name + "_e001" + "dr"
+
+    - name: Get List of Existing Volumes
+      netapp.ontap.na_ontap_info:
+        hostname: "{{ netapp_hostname }}"
+        username: "{{ netapp_username }}"
+        password: "{{ netapp_password }}"
+        https: true
+        validate_certs: false
+        gather_subset:
+          - volume_info
+      register: volume_objs
+    
+    # - name: Display list of volumes
+    #   debug:
+    #     var: ( volume_objs.ontap_info.volume_info | dict2items )
+
+    - name: Set array of volumes keys
+      ansible.builtin.set_fact: vol_keys="{{ volume_objs.ontap_info.volume_info.keys() }}"
+
+    # - name: Display list of volumes
+    #   debug:
+    #     var: vol_keys
+
+    # - name: Print volume key list
+    #   debug: 
+    #     var: item
+    #   loop: "{{ vol_keys }}"
+
+    # - name: Parse volume key list
+    #   ansible.builtin.set_fact:
+    #     vol_names: "{{ (vol_names | default([])) + [ item.split(':')[0] ] }}"
+    #   loop: "{{ vol_keys }}"
+
+    - name: Parse volume key list
+      ansible.builtin.set_fact:
+        vol_names: "{{ (vol_names | default([])) + [ item.split(':')[0] ] }}"
+      when: vol_name in item
+      loop: "{{ vol_keys }}"
+
+    - name: Display list of volumes names
+      debug:
+        var: vol_names
+
+    - name: Get next sequest number if multiple with same name exist
+      set_fact:
+        next_seq_num: >-
+          {{ vol_names
+            | map('regex_search', '([0-9]{3})$') 
+            | map('int') 
+            | max + 1 
+          }}
+      when: vol_names | length > 1
+
+    - name: Display largest number in duplicate sequence
+      debug:
+        var: next_seq_num
+
+    - name: Add a sequence number to the vol_name input if it DOES NOT exists
+      ansible.builtin.set_fact: 
+        vol_name: "{{ vol_name }}{{ '_e001' if vol_location == 'op-east' else '_w001' if vol_location == 'op-west' }}"
+      when: vol_name not in vol_names | join(' ')
+        
+    - name: Add a sequence number to the vol_name input if it DOES exists
+      ansible.builtin.set_fact:
+        vol_name: "{{ vol_name }}{{ '_e00' if vol_location == 'op-east' else '_w00' if vol_location == 'op-west' }}{{ next_seq_num | string }}"
+      when: vol_name in vol_names | join(' ')
+        
+    - debug:
+        var: vol_name
+
+
+    # - debug:
+    #     msg: "{{ vol_name }} is not in {{ vol_names }}"
+    #   when: vol_name not in vol_names | join(' ')
+
+    # - debug:
+    #     msg: "{{ vol_name }} is in {{ vol_names }}"
+    #   when: vol_name in vol_names | join(' ')
+
+    # - name: Get list of existing names
+    #   ansible.builtin.set_fact:
+    #     # dup_vol_names: "{{ (dup_vol_names | default([])) + [ item.split('_')[1] ] if vol_name == '(item | regex_replace('(.*)' ~ _ ~ '[^' ~ _ ~ ']*$', '\\1'))' }}"
+    #     dup_vol_names: "{{ (dup_vol_names | default([])) + [ item | regex_replace('^(.*)_[^_]+$', '\\1') ] }}"
+    #   when: "'_' in item"
+    #   loop: "{{ vol_names }}"
+
+    # - name: Get list of existing names with same volume name
+    #   ansible.builtin.set_fact:
+    #     dup_vol_names: "{{ dup_vol_names + [item] }}"
+    #   when: vol_name in item
+    #   loop: "{{ vol_names }}"
+
+    # - debug:
+    #     var: dup_vol_names
+
+    # - name: Add a sequence number to the vol_name input if it DOES NOT exists
+    #   ansible.builtin.set_fact: 
+    #     vol_name: "{{vol_name}}{{ '_e001' if vol_location == 'op-east' else '_w001' if vol_location == 'op-west' }}"
+    #   when: vol_name not in vol_names
+        
+    # - debug:
+    #     var: vol_name
+
+    # - name: 
+
+    # - name: Add a sequence number to the vol_name input if it DOES exists
+    #   ansible.builtin.set_fact:
+    #     seq_num: "{{ item.split('_')[1] }}" 
+    #     vol_name: "{{vol_name}}{{ '_e001' if vol_location == 'op-east' else '_w001' if vol_location == 'op-west' }}"
+        
+    # - debug:
+    #     var: vol_name
+
+    - name: Create a volume
+      netapp.ontap.na_ontap_volume:
+        state: present
+        hostname: "{{ netapp_hostname }}"
+        username: "{{ netapp_username }}"
+        password: "{{ netapp_password }}"
+        https: true
+        validate_certs: false
+        name: "{{ vol_name }}"
+        aggregate_name: "{{ netapp_aggr }}"
+        vserver: "{{ netapp_vserver }}"
+        size: 11
+        size_unit: gb
+        space_guarantee: volume
+        tiering_policy: none
+
+    # - name: Modify volume with snapshot auto delete options
+    #   netapp.ontap.na_ontap_volume:
+    #     hostname: "{{ netapp_hostname }}"
+    #     username: "{{ netapp_username }}"
+    #     password: "{{ netapp_password }}"
+    #     https: true
+    #     validate_certs: false
+    #     name: "{{ vol_name }}"
+    #     aggregate_name: "{{ netapp_aggr }}"
+    #     vserver: "{{ netapp_vserver }}"
+    #     size: 22
+    #     size_unit: gb
+    #     state: present
+
+    # - name: Volume Delete
+    #   netapp.ontap.na_ontap_volume:
+    #     hostname: "{{ netapp_hostname }}"
+    #     username: "{{ netapp_username }}"
+    #     password: "{{ netapp_password }}"
+    #     https: true
+    #     validate_certs: false
+    #     name: "{{ vol_name }}"
+    #     aggregate_name: "{{ netapp_aggr }}"
+    #     vserver: "{{ netapp_vserver }}"
+    #     state: absent

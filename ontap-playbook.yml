@@ -1,0 +1,214 @@
+---
+- name: Create a volume on NetApp ONTAP
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  collections:
+    - netapp.ontap  
+
+  vars_files:
+    - ontap-linux-vars.yml
+
+  vars:
+    action: delete                        # new, delete, grow, reclaim, reduce, add server(s)
+    platform: Unix                        # Windows, Unix
+    vol_name: cdelapaz_test_e004
+    vol_capacity: 55            
+    vol_location: op-east                 # op-east, op-west, az-east, az-west, azgov-east, azgov-west, nuc-east, nuc-west
+    export_policy: [ server1, server2 ]   # ONLY for Linux:  List of servers to mount volume on.  Fixed for Windows.
+    vol_names: []
+    dup_vol_names: []
+
+  tasks:
+  
+  # Creating a new volume
+
+  # 1) What action?  New
+  # 2) What platform? Unix
+  # 3) What cluster_location? op-east 
+  # 4) Vol name? (ServiceNow should sanitize this)
+  #       Check if it exists?  If it doesn't, vol_name + "_e001" for east, vol_name + "_w001)" for west?
+  #                            If it exists, iterate through list of similar and add +1, example vol_name + "_e002"
+  # 5) What size?  vol_size
+  # 6) Export policy?  Only provided for Linux.  Fixed var for Windows.
+  # 7) Always enable SnapMirror.  SnapMirror volume name is vol_name + "_e001" + "dr"
+
+    - block:    # START of block when action='new'
+
+      - name: Get List of Existing Volumes
+        netapp.ontap.na_ontap_info:
+          gather_subset:
+            - volume_info
+          hostname: "{{ netapp_hostname }}"
+          username: "{{ netapp_username }}"
+          password: "{{ netapp_password }}"
+          https: true
+          validate_certs: false
+        register: volume_objs
+      
+      - name: Display list of volumes
+        debug:
+          var: ( volume_objs.ontap_info.volume_info | dict2items )
+
+      - name: Set array of volumes keys
+        ansible.builtin.set_fact: vol_keys="{{ volume_objs.ontap_info.volume_info.keys() }}"
+
+      - name: Display list of volumes
+        debug:
+          var: vol_keys
+
+      - name: Print volume key list
+        debug: 
+          var: item
+        loop: "{{ vol_keys }}"
+
+      - name: Parse volume key list and create a new list of volumes contain the volume name
+        ansible.builtin.set_fact:
+          vol_names: "{{ (vol_names | default([])) + [ item.split(':')[0] ] }}"
+        when: vol_name in item
+        loop: "{{ vol_keys }}"
+
+      - name: Display list of volumes names
+        debug:
+          var: vol_names
+
+      - name: Get next sequest number if multiple with same name exist
+        set_fact:
+          next_seq_num: >-
+            {{ vol_names
+              | map('regex_search', '([0-9]{3})$') 
+              | map('int') 
+              | max + 1 
+            }}
+        when: vol_names | length > 0
+
+      - name: Display largest number in duplicate sequence
+        debug:
+          var: next_seq_num
+
+      - name: Add the first sequence number to the vol_name input if it DOES NOT exists
+        ansible.builtin.set_fact: 
+          vol_name: "{{ vol_name }}{{ '_e001' if vol_location == 'op-east' else '_w001' if vol_location == 'op-west' }}"
+        when: action == 'new' and vol_name not in vol_names | join(' ')
+          
+      - name: Add the next sequence number to the vol_name input if it DOES exists
+        ansible.builtin.set_fact:
+          vol_name: "{{ vol_name }}{{ '_e00' if vol_location == 'op-east' else '_w00' if vol_location == 'op-west' }}{{ next_seq_num | string }}"
+        when: action == 'new' and vol_name in vol_names | join(' ')
+          
+      - debug:
+          var: vol_name
+
+      - name: Create a volume
+        netapp.ontap.na_ontap_volume:
+          state: present
+          name: "{{ vol_name }}"
+          aggregate_name: "{{ netapp_aggr }}"
+          vserver: "{{ netapp_vserver }}"
+          size: "{{ vol_capacity }}"
+          size_unit: gb
+          space_guarantee: volume
+          tiering_policy: none
+          hostname: "{{ netapp_hostname }}"
+          username: "{{ netapp_username }}"
+          password: "{{ netapp_password }}"
+          https: true
+          validate_certs: false
+
+      - name: Create a destination SnapMirror volume
+        netapp.ontap.na_ontap_volume:
+          state: present
+          name: "{{ vol_name + 'dr' }}"
+          aggregate_name: "{{ netapp_aggr }}"
+          vserver: "{{ netapp_mirror_vserver }}"
+          size: "{{ vol_capacity }}"
+          size_unit: gb
+          space_guarantee: volume
+          tiering_policy: none
+          hostname: "{{ netapp_hostname }}"
+          username: "{{ netapp_username }}"
+          password: "{{ netapp_password }}"
+          https: true
+          validate_certs: false
+
+      # creates and initializes the snapmirror
+      - name: Create ONTAP/ONTAP SnapMirror
+        netapp.ontap.na_ontap_snapmirror:
+          state: present
+          source_endpoint:
+            cluster: "{{ source_cluster }}"
+            path: "{{ netapp_vserver + ':' + vol_name }}"
+          destination_endpoint:
+            cluster: "{{ destination_cluster }}"
+            path: "{{ netapp_mirror_vserver + ':' + vol_name + 'dr' }}"
+          schedule: hourly
+          policy: MirrorAllSnapshots
+          initialize: false
+          hostname: "{{ netapp_hostname }}"
+          username: "{{ netapp_username }}"
+          password: "{{ netapp_password }}"
+          https: true
+          validate_certs: false
+
+      when: action == 'new'   # END of block when action='new'
+
+    - name: Modify volume with snapshot auto delete options
+      netapp.ontap.na_ontap_volume:
+        state: present
+        name: "{{ vol_name }}"
+        aggregate_name: "{{ netapp_aggr }}"
+        vserver: "{{ netapp_vserver }}"
+        size: "{{ vol_capacity }}"
+        size_unit: gb
+        hostname: "{{ netapp_hostname }}"
+        username: "{{ netapp_username }}"
+        password: "{{ netapp_password }}"
+        https: true
+        validate_certs: false
+      when: action == 'grow'
+
+
+    - block:    # START of block when action='delete'
+
+        # Delete the snapmirror
+      - name: Delete ONTAP/ONTAP SnapMirror
+        netapp.ontap.na_ontap_snapmirror:
+          state: absent
+          source_endpoint:
+            cluster: "{{ source_cluster }}"
+            path: "{{ netapp_vserver + ':' + vol_name }}"
+          destination_endpoint:
+            cluster: "{{ destination_cluster }}"
+            path: "{{ netapp_mirror_vserver + ':' + vol_name + 'dr' }}"
+          relationship_info_only: false
+          hostname: "{{ netapp_hostname }}"
+          username: "{{ netapp_username }}"
+          password: "{{ netapp_password }}"
+          https: true
+          validate_certs: false
+
+      - name: Delete SnapMirror Volume
+        netapp.ontap.na_ontap_volume:
+          state: absent
+          name: "{{ vol_name + 'dr' }}"
+          aggregate_name: "{{ netapp_aggr }}"
+          vserver: "{{ netapp_mirror_vserver }}"
+          hostname: "{{ netapp_hostname }}"
+          username: "{{ netapp_username }}"
+          password: "{{ netapp_password }}"
+          https: true
+          validate_certs: false
+
+      - name: Delete Volume
+        netapp.ontap.na_ontap_volume:
+          state: absent
+          name: "{{ vol_name }}"
+          aggregate_name: "{{ netapp_aggr }}"
+          vserver: "{{ netapp_vserver }}"
+          hostname: "{{ netapp_hostname }}"
+          username: "{{ netapp_username }}"
+          password: "{{ netapp_password }}"
+          https: true
+          validate_certs: false
+
+      when: action == 'delete'  # END of block when action='delete'
